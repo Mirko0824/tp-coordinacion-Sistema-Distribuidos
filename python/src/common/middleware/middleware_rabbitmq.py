@@ -1,6 +1,4 @@
 import pika
-import random
-import string
 from .middleware import MessageMiddlewareQueue, MessageMiddlewareExchange, MessageMiddlewareCloseError, MessageMiddlewareDisconnectedError, MessageMiddlewareMessageError
 
 class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
@@ -12,13 +10,17 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
         self.producer_connection = None
         self.consumer_channel = None
         self.producer_channel = None
+        self.is_consuming = False
 
     def send(self, message):
         try:
-            # Se inicializa la conexion con rabbitmq de parte del productor
-            self.producer_connection = pika.BlockingConnection(pika.ConnectionParameters(self.host))
-            # Se crea un canal dentro de la conexion establecida para no tener que establecer multiples conexiones 
-            self.producer_channel = self.producer_connection.channel()
+            # Valido que la conexion y el canal no existan o ya esten cerrados para volver a crearlos
+            if self.producer_connection is None or self.producer_connection.is_closed:
+                # Se inicializa la conexion con rabbitmq de parte del productor
+                self.producer_connection = pika.BlockingConnection(pika.ConnectionParameters(self.host))
+            if self.producer_channel is None or self.producer_channel.is_closed:
+                # Se crea un canal dentro de la conexion establecida para no tener que establecer multiples conexiones 
+                self.producer_channel = self.producer_connection.channel()
         except Exception as error:
             # Levanto excepcion de conexion
             raise MessageMiddlewareDisconnectedError(error)
@@ -37,11 +39,17 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
     def start_consuming(self, on_message_callback):
         try:
             # Se inicializa la conexion con rabbitmq de parte del consumidor y se crea el canal dentro de la conexion
-            self.consumer_connection = pika.BlockingConnection(pika.ConnectionParameters(self.host))
-            self.consumer_channel = self.consumer_connection.channel()
+            # Valido que la conexion y el canal no existan o ya esten cerrados para volver a crearlos
+            if self.consumer_connection is None or self.consumer_connection.is_closed:
+                self.consumer_connection = pika.BlockingConnection(pika.ConnectionParameters(self.host))
+            if self.consumer_channel is None or self.consumer_channel.is_closed:
+                self.consumer_channel = self.consumer_connection.channel()
         except Exception as error:
             raise MessageMiddlewareDisconnectedError(error)
 
+        if self.is_consuming:
+            raise MessageMiddlewareMessageError("Ya se esta consumiendo la cola, no se puede volver a consumir")
+        
         try:
             # Creo la cola donde se encolan los mensajes
             self.consumer_channel.queue_declare(queue=self.queue_name, durable=True)
@@ -61,10 +69,13 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
 
             # Defino que quiero consumir de la cola declarada con el nombre self.queue_name y paso la funcion callback
             self.consumer_channel.basic_consume(queue=self.queue_name, on_message_callback=callback, auto_ack=False)
+            self.is_consuming = True
             # Empieza a recibir los mensajes de la cola
             self.consumer_channel.start_consuming()
         except Exception as error:
             raise MessageMiddlewareMessageError(error)
+        finally:
+            self.is_consuming = False
 
     def close(self):
         try:
@@ -79,7 +90,7 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
     
     def stop_consuming(self):
         try:
-            if self.consumer_channel and self.consumer_channel.is_open:
+            if self.is_consuming and self.consumer_channel and self.consumer_channel.is_open:
                 # Llamo el metodo de stop_consuming de pika para romper el ciclo infinito
                 self.consumer_channel.stop_consuming()
         except Exception as error:
@@ -96,16 +107,22 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
         self.producer_connection = None
         self.consumer_channel = None
         self.producer_channel = None
+        self.is_consuming = False
 
     def start_consuming(self, on_message_callback):
         try:
             # Inicializo conexion con rabbitmq y creo canal
-            self.consumer_connection = pika.BlockingConnection(pika.ConnectionParameters(self.host))
-            self.consumer_channel = self.consumer_connection.channel()
+            if self.consumer_connection is None or self.consumer_connection.is_closed:
+                self.consumer_connection = pika.BlockingConnection(pika.ConnectionParameters(self.host))
+            if self.consumer_channel is None or self.consumer_channel.is_closed:
+                self.consumer_channel = self.consumer_connection.channel()
         except Exception as error:
             # Levanto excepcion de conexion
             raise MessageMiddlewareDisconnectedError(error)
         
+        if self.is_consuming:
+            raise MessageMiddlewareMessageError("Ya se esta consumiendo el exchange, no se puede volver a consumir")
+
         try:
             # Defino el exchanger con el nombre y tipo 'direct' que busca coincidencia exacta
             self.consumer_channel.exchange_declare(exchange=self.exchange_name, exchange_type='direct')
@@ -127,15 +144,20 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
 
             # Defino de que cola quiero consumir, la funcion callback que llamo cada vez que entra un mensaje y empeizo a consumir
             self.consumer_channel.basic_consume(queue=queue_name, on_message_callback=callback, auto_ack=False)
+            self.is_consuming = True
             self.consumer_channel.start_consuming()
         except Exception as error:
             # Levanto excepcion por algun error interno
             raise MessageMiddlewareMessageError(error)
+        finally:
+            self.is_consuming = False
 
     def send(self, message):
         try:
-            self.producer_connection = pika.BlockingConnection(pika.ConnectionParameters(self.host))
-            self.producer_channel = self.producer_connection.channel()
+            if self.producer_connection is None or self.producer_connection.is_closed:
+                self.producer_connection = pika.BlockingConnection(pika.ConnectionParameters(self.host))
+            if self.producer_channel is None or self.producer_channel.is_closed:
+                self.producer_channel = self.producer_connection.channel()
         except Exception as error:
             # Levanto excepcion de conexion
             raise MessageMiddlewareDisconnectedError(error)
@@ -162,7 +184,7 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
     
     def stop_consuming(self):
         try:
-            if self.consumer_channel and self.consumer_channel.is_open:
+            if self.is_consuming and self.consumer_channel and self.consumer_channel.is_open:
                 # Llamo el metodo de stop_consuming de pika para romper el ciclo infinito
                 self.consumer_channel.stop_consuming()
         except Exception as error:
