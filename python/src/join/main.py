@@ -25,8 +25,17 @@ class JoinFilter:
 
     def process_messsage(self, message, ack, nack):
         logging.info("Received top")
-        fruit_top = message_protocol.internal.deserialize(message)
-        self.output_queue.send(message_protocol.internal.serialize(fruit_top))
+        fields = message_protocol.internal.deserialize(message)
+        message_type = fields.get("type")
+        # Valido el type y envio el mensaje a la queue
+        if message_type == message_protocol.internal.MessageType.PARCIAL_TOP:
+            join_message = {
+                "type": message_protocol.internal.MessageType.FINAL_TOP,
+                "client_id": fields.get("client_id"),
+                "top_fruits": fields.get("top_fruits"),
+            }
+            self.output_queue.send(message_protocol.internal.serialize(join_message))
+
         ack()
 
     def start(self):

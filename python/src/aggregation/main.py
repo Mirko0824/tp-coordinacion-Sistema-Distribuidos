@@ -23,38 +23,53 @@ class AggregationFilter:
         self.output_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             MOM_HOST, OUTPUT_QUEUE
         )
-        self.fruit_top = []
+        self.clients_fruits = {}
 
-    def _process_data(self, fruit, amount):
+    def _process_data(self, client_id, fruit, amount):
         logging.info("Processing data message")
-        for i in range(len(self.fruit_top)):
-            if self.fruit_top[i].fruit == fruit:
-                self.fruit_top[i] = self.fruit_top[i] + fruit_item.FruitItem(
-                    fruit, amount
-                )
-                return
-        bisect.insort(self.fruit_top, fruit_item.FruitItem(fruit, amount))
-
-    def _process_eof(self):
-        logging.info("Received EOF")
-        fruit_chunk = list(self.fruit_top[-TOP_SIZE:])
-        fruit_chunk.reverse()
-        fruit_top = list(
-            map(
-                lambda fruit_item: (fruit_item.fruit, fruit_item.amount),
-                fruit_chunk,
-            )
+        client_fruit = self.clients_fruits.get(client_id, {})
+        # Obtengo el fruitItem, si no existe devuelve un fruitItem con cantidad 0 y le suma el fruitItem con la cantidad recibida
+        # Si ya existe la fruta, devuelve la cantidad que ya tenia, ignorando el fruitItem con cantidad 0 
+        # y le suma el fruitItem con la cantidad recibida
+        client_fruit[fruit] = client_fruit.get(
+            fruit, fruit_item.FruitItem(fruit, 0)) + fruit_item.FruitItem(fruit, int(amount)
         )
-        self.output_queue.send(message_protocol.internal.serialize(fruit_top))
-        del self.fruit_top
+        # Guardo el top de frutas actualizado del client_id
+        self.clients_fruits[client_id] = client_fruit
+
+    def _process_eof(self, client_id):
+        logging.info("Received EOF")
+        client_top = self.clients_fruits.get(client_id, {})
+        # Obtengo el top de frutas ordenado por cantidad de mayor a menor
+        fruit_top = sorted(client_top.values())
+        fruit_top.reverse()
+        # Obtengo el top de frutas limitado a TOP_SIZE
+        fruit_top = fruit_top[:TOP_SIZE]
+        # Guardo la fruta y la cantidad en una lista de tuplas para enviarlo a join
+        fruit_list = []
+        for fruit in fruit_top:
+            fruit_list.append((fruit.fruit, fruit.amount))
+
+        # Defino el json que envia a join con el top de frutas del client_id
+        top_fruits_message = {
+            "type": message_protocol.internal.MessageType.PARCIAL_TOP,
+            "client_id": client_id,
+            "top_fruits": fruit_list,
+        }
+
+        self.output_queue.send(message_protocol.internal.serialize(top_fruits_message))
+        self.clients_fruits.pop(client_id, None)
 
     def process_messsage(self, message, ack, nack):
         logging.info("Process message")
         fields = message_protocol.internal.deserialize(message)
-        if len(fields) == 2:
-            self._process_data(*fields)
-        else:
-            self._process_eof()
+        message_type = fields.get("type")
+        # Valido si el mensaje es de tipo data o eof
+        if message_type == message_protocol.internal.MessageType.PARCIAL_SUM:
+            self._process_data(fields["client_id"], fields["fruit"], fields["amount"])
+        elif message_type == message_protocol.internal.MessageType.EOF_SUM:
+            self._process_eof(fields["client_id"])
+        
         ack()
 
     def start(self):

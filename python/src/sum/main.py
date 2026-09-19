@@ -24,35 +24,56 @@ class SumFilter:
                 MOM_HOST, AGGREGATION_PREFIX, [f"{AGGREGATION_PREFIX}_{i}"]
             )
             self.data_output_exchanges.append(data_output_exchange)
-        self.amount_by_fruit = {}
+        # Incializo json para clasificar cada fruta y cantidad respecto a su cliente correspondiente
+        self.clients_fruit_sum = {}
 
-    def _process_data(self, fruit, amount):
+    def _process_data(self, client_id, fruit, amount):
         logging.info(f"Process data")
-        self.amount_by_fruit[fruit] = self.amount_by_fruit.get(
+        self.clients_fruit_sum[client_id] = self.clients_fruit_sum.get(client_id, {})
+
+        # Si la fruta ya existe, sumo la cantidad, sino se agrega
+        self.clients_fruit_sum[client_id][fruit] = self.clients_fruit_sum[client_id].get(
             fruit, fruit_item.FruitItem(fruit, 0)
         ) + fruit_item.FruitItem(fruit, int(amount))
 
-    def _process_eof(self):
+    def _process_eof(self, client_id):
         logging.info(f"Broadcasting data messages")
-        for final_fruit_item in self.amount_by_fruit.values():
+        # Obtengo las frutas y cantidades del client_id y si no encuentra devuelve json vacio
+        client_fruits = self.clients_fruit_sum.get(client_id, {})
+        # Recorro cada fruta del json para enviarlos cada uno a las instancias de aggregation
+        # Envio todas las frutas y sumas parciales acumuladas del client_id
+        for parcial_fruit in client_fruits.values():
+            parcial_fruit_message = {
+                "type": message_protocol.internal.MessageType.PARCIAL_SUM,
+                "client_id": client_id,
+                "fruit": parcial_fruit.fruit,
+                "amount": parcial_fruit.amount,
+            }
             for data_output_exchange in self.data_output_exchanges:
                 data_output_exchange.send(
-                    message_protocol.internal.serialize(
-                        [final_fruit_item.fruit, final_fruit_item.amount]
-                    )
+                    message_protocol.internal.serialize(parcial_fruit_message)
                 )
 
-        logging.info(f"Broadcasting EOF message")
+        eof_message = {
+            "type": message_protocol.internal.MessageType.EOF_SUM,
+            "client_id": client_id,
+        }
+        # Envio mensaje de eof para a todos los aggregations indicando que no hay mas resultados parciales del cliente
         for data_output_exchange in self.data_output_exchanges:
-            data_output_exchange.send(message_protocol.internal.serialize([]))
+            data_output_exchange.send(message_protocol.internal.serialize(eof_message))
 
+        # Elimino todo el json del client_id
+        self.clients_fruit_sum.pop(client_id, None)
 
     def process_data_messsage(self, message, ack, nack):
         fields = message_protocol.internal.deserialize(message)
-        if len(fields) == 2:
-            self._process_data(*fields)
-        else:
-            self._process_eof(*fields)
+        message_type = fields["type"]
+        # Valido si el mensaje es de tipo data o eof
+        if message_type == message_protocol.internal.MessageType.FRUIT_INFO:
+            self._process_data(fields["client_id"], fields["fruit"], fields["amount"])
+        elif message_type == message_protocol.internal.MessageType.EOF_CLIENT:
+            self._process_eof(fields["client_id"])
+        
         ack()
 
     def start(self):
