@@ -1,3 +1,8 @@
 .DS_Store
 /python/output
 /python/src/common/fruit_item/__pycache__
+/python/src/aggregation/__pycache__
+/python/src/common/message_protocol/__pycache__
+/python/src/gateway/message_handler/__pycache__
+/python/src/join/__pycache__
+/python/src/sum/__pycache__

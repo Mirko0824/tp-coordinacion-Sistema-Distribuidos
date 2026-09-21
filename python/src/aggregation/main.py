@@ -24,21 +24,32 @@ class AggregationFilter:
             MOM_HOST, OUTPUT_QUEUE
         )
         self.clients_fruits = {}
+        self.clients_eof_sums = {}
 
     def _process_data(self, client_id, fruit, amount):
         logging.info("Processing data message")
-        client_fruit = self.clients_fruits.get(client_id, {})
+        client_fruit = self.clients_fruits.setdefault(client_id, {})
         # Obtengo el fruitItem, si no existe devuelve un fruitItem con cantidad 0 y le suma el fruitItem con la cantidad recibida
         # Si ya existe la fruta, devuelve la cantidad que ya tenia, ignorando el fruitItem con cantidad 0 
         # y le suma el fruitItem con la cantidad recibida
         client_fruit[fruit] = client_fruit.get(
-            fruit, fruit_item.FruitItem(fruit, 0)) + fruit_item.FruitItem(fruit, int(amount)
-        )
+            fruit, fruit_item.FruitItem(fruit, 0)) + fruit_item.FruitItem(fruit, int(amount))
         # Guardo el top de frutas actualizado del client_id
         self.clients_fruits[client_id] = client_fruit
 
-    def _process_eof(self, client_id):
+    def _process_eof(self, client_id, sum_id):
         logging.info("Received EOF")
+        # Obtengo el set de sum_ids que ya enviaron eof para el client_id
+        # si no existe devuelve un set vacio
+        client_eof_sums = self.clients_eof_sums.setdefault(client_id, set())
+        # Agrego el sum_id al set del cliente
+        client_eof_sums.add(sum_id)
+
+        # Mientras no se recibieron todos los eof de los sum, no se envian los top parciales
+        if len(client_eof_sums) < SUM_AMOUNT:
+            return
+        
+        self.clients_eof_sums.pop(client_id, None)
         client_top = self.clients_fruits.get(client_id, {})
         # Obtengo el top de frutas ordenado por cantidad de mayor a menor
         fruit_top = sorted(client_top.values())
@@ -68,7 +79,7 @@ class AggregationFilter:
         if message_type == message_protocol.internal.MessageType.PARCIAL_SUM:
             self._process_data(fields["client_id"], fields["fruit"], fields["amount"])
         elif message_type == message_protocol.internal.MessageType.EOF_SUM:
-            self._process_eof(fields["client_id"])
+            self._process_eof(fields["client_id"], fields["sum_id"])
         
         ack()
 

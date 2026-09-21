@@ -26,26 +26,51 @@ class SumFilter:
             self.data_output_exchanges.append(data_output_exchange)
         # Incializo json para clasificar cada fruta y cantidad respecto a su cliente correspondiente
         self.clients_fruit_sum = {}
+        # Cada Sum escucha su routing key para recibir su copia del EOF_CONTROL
+        self.eof_control_listener = middleware.MessageMiddlewareExchangeRabbitMQ(
+            MOM_HOST, SUM_CONTROL_EXCHANGE, [f"{SUM_PREFIX}_{ID}"]
+        )
+        # Creo un productor por cada routing key de Sum para enviar el EOF_CONTROL
+        self.eof_control_exchanges = []
+        for i in range(SUM_AMOUNT):
+            eof_control_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
+                MOM_HOST, SUM_CONTROL_EXCHANGE, [f"{SUM_PREFIX}_{i}"]
+            )
+            self.eof_control_exchanges.append(eof_control_exchange)
+        
+        # Se crea un lock para proteger clients_fruit_sum, ya que 
+        # el thread principal agrega y suma frutas y el thread secundario se encarga de leer y eliminar
+        self.clients_sum_lock = threading.Lock()
 
     def _process_data(self, client_id, fruit, amount):
         logging.info(f"Process data")
-        self.clients_fruit_sum[client_id] = self.clients_fruit_sum.get(client_id, {})
+        self.clients_fruit_sum[client_id] = self.clients_fruit_sum.setdefault(client_id, {})
 
         # Si la fruta ya existe, sumo la cantidad, sino se agrega
         self.clients_fruit_sum[client_id][fruit] = self.clients_fruit_sum[client_id].get(
             fruit, fruit_item.FruitItem(fruit, 0)
         ) + fruit_item.FruitItem(fruit, int(amount))
+    
+    def _notify_eof(self, client_id):
+        eof_message = {
+                "type": message_protocol.internal.MessageType.EOF_CONTROL,
+                "client_id": client_id,
+            }
+        # Envio una copia del EOF_CONTROL a cada instancia de sum
+        for eof_control_exchange in self.eof_control_exchanges:
+            eof_control_exchange.send(message_protocol.internal.serialize(eof_message))
 
     def _process_eof(self, client_id):
         logging.info(f"Broadcasting data messages")
         # Obtengo las frutas y cantidades del client_id y si no encuentra devuelve json vacio
         client_fruits = self.clients_fruit_sum.get(client_id, {})
         # Recorro cada fruta del json para enviarlos cada uno a las instancias de aggregation
-        # Envio todas las frutas y sumas parciales acumuladas del client_id
+        # Envio todas las frutas y sumas parciales acumuladas del client_id a todas las instancias de aggregation
         for parcial_fruit in client_fruits.values():
             parcial_fruit_message = {
                 "type": message_protocol.internal.MessageType.PARCIAL_SUM,
                 "client_id": client_id,
+                "sum_id": ID,
                 "fruit": parcial_fruit.fruit,
                 "amount": parcial_fruit.amount,
             }
@@ -56,27 +81,48 @@ class SumFilter:
 
         eof_message = {
             "type": message_protocol.internal.MessageType.EOF_SUM,
+            "sum_id": ID,
             "client_id": client_id,
         }
-        # Envio mensaje de eof para a todos los aggregations indicando que no hay mas resultados parciales del cliente
+        # Envío EOF_SUM a todos los aggregations para indicar que esta instancia terminó de enviar las sumas del cliente
         for data_output_exchange in self.data_output_exchanges:
             data_output_exchange.send(message_protocol.internal.serialize(eof_message))
 
         # Elimino todo el json del client_id
         self.clients_fruit_sum.pop(client_id, None)
 
+    def process_eof_control(self, message, ack, nack):
+        logging.info("Received EOF sum control")
+        fields = message_protocol.internal.deserialize(message)
+        if fields.get("type") != message_protocol.internal.MessageType.EOF_CONTROL:
+            nack()
+            return
+        with self.clients_sum_lock:
+            self._process_eof(fields["client_id"])
+        ack()
+
     def process_data_messsage(self, message, ack, nack):
         fields = message_protocol.internal.deserialize(message)
         message_type = fields["type"]
         # Valido si el mensaje es de tipo data o eof
         if message_type == message_protocol.internal.MessageType.FRUIT_INFO:
-            self._process_data(fields["client_id"], fields["fruit"], fields["amount"])
+            with self.clients_sum_lock:
+                self._process_data(fields["client_id"], fields["fruit"], fields["amount"])
+        # Cuando es EOF_CLIENT, la instancia de sum se encarga de notificar a sus hermanos y a si misma
         elif message_type == message_protocol.internal.MessageType.EOF_CLIENT:
-            self._process_eof(fields["client_id"])
+            self._notify_eof(fields["client_id"])
         
         ack()
 
     def start(self):
+        # Inicio un thread dedicado a recibir los EOF_CONTROL
+        sum_eof_control = threading.Thread(
+            target=self.eof_control_listener.start_consuming, 
+            args=(self.process_eof_control,), 
+            daemon=True
+        )
+        sum_eof_control.start()
+
         self.input_queue.start_consuming(self.process_data_messsage)
 
 def main():

@@ -12,8 +12,10 @@ class MessageType:
     FINAL_TOP = 0x04
     # Mensajes que va de sum a aggregation indicando fin de sumas parciales
     EOF_SUM = 0x05
-    # Mensajes de gateway a sum indicando eof
+    # Mensajes de eof del cliente a un sum
     EOF_CLIENT = 0x06
+    # Mensajes de eof de un sum notificando a las demas instancias de sum
+    EOF_CONTROL = 0x07
 
 def serialize(message):
     return json.dumps(message).encode("utf-8")
