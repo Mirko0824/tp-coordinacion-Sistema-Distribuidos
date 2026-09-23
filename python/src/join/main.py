@@ -23,18 +23,51 @@ class JoinFilter:
             MOM_HOST, OUTPUT_QUEUE
         )
 
+        self.clients_parcial_tops = {}
+
+    def _process_data(self, client_id, aggregation_id, parcial_top):
+        
+        client_tops = self.clients_parcial_tops.setdefault(client_id, {})
+        client_tops[aggregation_id] = parcial_top
+
+        # Verifico que todos los aggregations hayan enviado el top parcial
+        if len(client_tops) < AGGREGATION_AMOUNT:
+            return
+        
+        # Agrupo los top_parciales de los aggregations para obtener el top final
+        fruits = []
+        for aggregation_top in client_tops.values():
+            for fruit, amount in aggregation_top:
+                fruits.append(fruit_item.FruitItem(fruit, int(amount)))
+
+        # Ordeno de mayor a menor y me quedo con los primeros TOP_SIZE
+        final_top = sorted(fruits, reverse=True)[:TOP_SIZE]
+
+        # Creo la lista con el top final para enviarlo al cliente
+        fruit_list = [
+            (fruit.fruit, fruit.amount)
+            for fruit in final_top
+        ]
+
+        join_message = {
+            "type": message_protocol.internal.MessageType.FINAL_TOP,
+            "client_id": client_id,
+            "top_fruits": fruit_list,
+        }
+        self.output_queue.send(message_protocol.internal.serialize(join_message))
+        self.clients_parcial_tops.pop(client_id, None)
+
     def process_messsage(self, message, ack, nack):
         logging.info("Received top")
         fields = message_protocol.internal.deserialize(message)
         message_type = fields.get("type")
+        client_id = fields.get("client_id")
+        aggregation_id = fields.get("aggregation_id")
+        parcial_top = fields.get("top_fruits")
+        
         # Valido el type y envio el mensaje a la queue
         if message_type == message_protocol.internal.MessageType.PARCIAL_TOP:
-            join_message = {
-                "type": message_protocol.internal.MessageType.FINAL_TOP,
-                "client_id": fields.get("client_id"),
-                "top_fruits": fields.get("top_fruits"),
-            }
-            self.output_queue.send(message_protocol.internal.serialize(join_message))
+            self._process_data(client_id, aggregation_id, parcial_top)
 
         ack()
 

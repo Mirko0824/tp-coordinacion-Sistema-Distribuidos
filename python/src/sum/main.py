@@ -1,6 +1,7 @@
 import os
 import logging
 import threading
+import hashlib
 
 from common import middleware, message_protocol, fruit_item
 
@@ -30,13 +31,14 @@ class SumFilter:
         self.eof_control_listener = middleware.MessageMiddlewareExchangeRabbitMQ(
             MOM_HOST, SUM_CONTROL_EXCHANGE, [f"{SUM_PREFIX}_{ID}"]
         )
-        # Creo un productor por cada routing key de Sum para enviar el EOF_CONTROL
-        self.eof_control_exchanges = []
-        for i in range(SUM_AMOUNT):
-            eof_control_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
-                MOM_HOST, SUM_CONTROL_EXCHANGE, [f"{SUM_PREFIX}_{i}"]
+        # Creo un productor y paso el array de routing keys
+        self.eof_control_exchange = (
+            middleware.MessageMiddlewareExchangeRabbitMQ(
+                MOM_HOST,
+                SUM_CONTROL_EXCHANGE,
+                [f"{SUM_PREFIX}_{i}" for i in range(SUM_AMOUNT)],
             )
-            self.eof_control_exchanges.append(eof_control_exchange)
+        )
         
         # Se crea un lock para proteger clients_fruit_sum, ya que 
         # el thread principal agrega y suma frutas y el thread secundario se encarga de leer y eliminar
@@ -51,19 +53,15 @@ class SumFilter:
             fruit, fruit_item.FruitItem(fruit, 0)
         ) + fruit_item.FruitItem(fruit, int(amount))
     
-    def _notify_eof(self, client_id):
+    def _notify_eof_control(self, client_id):
         eof_message = {
                 "type": message_protocol.internal.MessageType.EOF_CONTROL,
                 "client_id": client_id,
             }
         # Envio una copia del EOF_CONTROL a cada instancia de sum
-        for eof_control_exchange in self.eof_control_exchanges:
-            eof_control_exchange.send(message_protocol.internal.serialize(eof_message))
+        self.eof_control_exchange.send(message_protocol.internal.serialize(eof_message))
 
-    def _process_eof(self, client_id):
-        logging.info(f"Broadcasting data messages")
-        # Obtengo las frutas y cantidades del client_id y si no encuentra devuelve json vacio
-        client_fruits = self.clients_fruit_sum.get(client_id, {})
+    def _send_parcial_sum(self, client_id, client_fruits):
         # Recorro cada fruta del json para enviarlos cada uno a las instancias de aggregation
         # Envio todas las frutas y sumas parciales acumuladas del client_id a todas las instancias de aggregation
         for parcial_fruit in client_fruits.values():
@@ -74,19 +72,32 @@ class SumFilter:
                 "fruit": parcial_fruit.fruit,
                 "amount": parcial_fruit.amount,
             }
-            for data_output_exchange in self.data_output_exchanges:
-                data_output_exchange.send(
-                    message_protocol.internal.serialize(parcial_fruit_message)
-                )
 
+            # Calculo un hash a partir del nombre de la fruta
+            fruit_hash = hashlib.sha256(parcial_fruit.fruit.encode("utf-8")).hexdigest()
+
+            # Convierto el hash hexadecimal a un entero y calculo el modulo para obtener el aggregation_id
+            aggregation_id = int(fruit_hash, 16) % AGGREGATION_AMOUNT
+
+            # Envío la suma parcial únicamente al aggregation asignado
+            self.data_output_exchanges[aggregation_id].send(message_protocol.internal.serialize(parcial_fruit_message))
+    
+    def _send_eof_sum(self, client_id):
+        # Envio EOF_SUM a todos los aggregations para indicar que esta instancia terminó de enviar las sumas del cliente
         eof_message = {
             "type": message_protocol.internal.MessageType.EOF_SUM,
             "sum_id": ID,
             "client_id": client_id,
         }
-        # Envío EOF_SUM a todos los aggregations para indicar que esta instancia terminó de enviar las sumas del cliente
         for data_output_exchange in self.data_output_exchanges:
             data_output_exchange.send(message_protocol.internal.serialize(eof_message))
+
+    def _process_eof(self, client_id):
+        logging.info(f"Broadcasting data messages")
+        # Obtengo las frutas y cantidades del client_id y si no encuentra devuelve json vacio
+        client_fruits = self.clients_fruit_sum.get(client_id, {})
+        self._send_parcial_sum(client_id, client_fruits)
+        self._send_eof_sum(client_id)
 
         # Elimino todo el json del client_id
         self.clients_fruit_sum.pop(client_id, None)
@@ -97,6 +108,7 @@ class SumFilter:
         if fields.get("type") != message_protocol.internal.MessageType.EOF_CONTROL:
             nack()
             return
+        # Lockeo por si el thread principal está agregando frutas
         with self.clients_sum_lock:
             self._process_eof(fields["client_id"])
         ack()
@@ -110,7 +122,7 @@ class SumFilter:
                 self._process_data(fields["client_id"], fields["fruit"], fields["amount"])
         # Cuando es EOF_CLIENT, la instancia de sum se encarga de notificar a sus hermanos y a si misma
         elif message_type == message_protocol.internal.MessageType.EOF_CLIENT:
-            self._notify_eof(fields["client_id"])
+            self._notify_eof_control(fields["client_id"])
         
         ack()
 
