@@ -90,9 +90,10 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
     
     def stop_consuming(self):
         try:
-            if self.is_consuming and self.consumer_channel and self.consumer_channel.is_open:
-                # Llamo el metodo de stop_consuming de pika para romper el ciclo infinito
-                self.consumer_channel.stop_consuming()
+            if self.is_consuming and self.consumer_connection and self.consumer_connection.is_open:
+                self.consumer_connection.add_callback_threadsafe(
+                    self.consumer_channel.stop_consuming
+                )
         except Exception as error:
             # Levanto excepcion de conexion
             raise MessageMiddlewareDisconnectedError(error)
@@ -127,10 +128,10 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
             # Defino el exchanger con el nombre y tipo 'direct' que busca coincidencia exacta
             self.consumer_channel.exchange_declare(exchange=self.exchange_name, exchange_type='direct')
 
+            # Creo una queue name concatenando todos los routing keys con el exchange name
+            queue_name = f"{self.exchange_name}_{'_'.join(self.routing_keys)}"
             # Creo la cola donde se encolan los mensajes, en el queue name no le paso nada y lo genera automaticamente rabbitmq
-            result = self.consumer_channel.queue_declare(queue='', exclusive=True)
-            # Guardo el nombre generado
-            queue_name = result.method.queue
+            self.consumer_channel.queue_declare(queue=queue_name, durable=True)
 
             # Recorro todos los routing_keys que son todos los tipos/claves de mensajes que quiero que se encolen
             for rk in self.routing_keys:
@@ -167,6 +168,11 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
 
             # Recorro todos los routing_keys y envio el mismo mensaje con cada clave diferente
             for rk in self.routing_keys:
+                # Defino el queue name y conecto con el exchange con diferentes routing keys
+                queue_name = f"{self.exchange_name}_{rk}"
+                self.producer_channel.queue_declare(queue=queue_name, durable=True)
+                self.producer_channel.queue_bind(exchange=self.exchange_name, queue=queue_name, routing_key=rk)
+                # Publico el mensaje con cada routing key
                 self.producer_channel.basic_publish(exchange=self.exchange_name, routing_key=rk, body=message)
 
         except Exception as error:
@@ -184,8 +190,9 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
     
     def stop_consuming(self):
         try:
-            if self.is_consuming and self.consumer_channel and self.consumer_channel.is_open:
-                # Llamo el metodo de stop_consuming de pika para romper el ciclo infinito
-                self.consumer_channel.stop_consuming()
+            if self.is_consuming and self.consumer_connection and self.consumer_connection.is_open:
+                self.consumer_connection.add_callback_threadsafe(
+                    self.consumer_channel.stop_consuming
+                )
         except Exception as error:
             raise MessageMiddlewareDisconnectedError(error)

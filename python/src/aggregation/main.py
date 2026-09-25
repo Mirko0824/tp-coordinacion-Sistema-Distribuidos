@@ -1,6 +1,6 @@
 import os
 import logging
-import bisect
+import signal
 
 from common import middleware, message_protocol, fruit_item
 
@@ -96,13 +96,32 @@ class AggregationFilter:
         ack()
 
     def start(self):
-        self.input_exchange.start_consuming(self.process_messsage)
+        try:
+            self.input_exchange.start_consuming(self.process_messsage)
+        finally:
+            self.stop_consume()
 
+    def stop_consume(self):
+        self.input_exchange.stop_consuming()
+
+    def handle_sigterm(self, signum, frame):
+        self.stop_consume()
+
+    def close_connections(self):
+        self.input_exchange.close()
+        self.output_queue.close()
 
 def main():
     logging.basicConfig(level=logging.INFO)
     aggregation_filter = AggregationFilter()
-    aggregation_filter.start()
+
+    signal.signal(signal.SIGTERM, aggregation_filter.handle_sigterm)
+
+    try:
+        aggregation_filter.start()
+    finally:
+        aggregation_filter.close_connections()
+
     return 0
 
 

@@ -1,5 +1,6 @@
 import os
 import logging
+import signal
 
 from common import middleware, message_protocol, fruit_item
 
@@ -72,13 +73,31 @@ class JoinFilter:
         ack()
 
     def start(self):
-        self.input_queue.start_consuming(self.process_messsage)
+        try:
+            self.input_queue.start_consuming(self.process_messsage)
+        finally:
+            self.stop_consume()
 
+    def stop_consume(self):
+        self.input_queue.stop_consuming()
+
+    def handle_sigterm(self, signum, frame):
+        self.stop_consume()
+
+    def close_connections(self):
+        self.input_queue.close()
+        self.output_queue.close()
 
 def main():
     logging.basicConfig(level=logging.INFO)
     join_filter = JoinFilter()
-    join_filter.start()
+
+    signal.signal(signal.SIGTERM, join_filter.handle_sigterm)
+
+    try:
+        join_filter.start()
+    finally:
+        join_filter.close_connections()
 
     return 0
 

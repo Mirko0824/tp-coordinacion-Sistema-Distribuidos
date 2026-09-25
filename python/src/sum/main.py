@@ -2,6 +2,7 @@ import os
 import logging
 import threading
 import hashlib
+import signal
 
 from common import middleware, message_protocol, fruit_item
 
@@ -43,6 +44,7 @@ class SumFilter:
         # Se crea un lock para proteger clients_fruit_sum, ya que 
         # el thread principal agrega y suma frutas y el thread secundario se encarga de leer y eliminar
         self.clients_sum_lock = threading.Lock()
+        self.sum_eof_control = None
 
     def _process_data(self, client_id, fruit, amount):
         logging.info(f"Process data")
@@ -128,19 +130,53 @@ class SumFilter:
 
     def start(self):
         # Inicio un thread dedicado a recibir los EOF_CONTROL
-        sum_eof_control = threading.Thread(
+        self.sum_eof_control = threading.Thread(
             target=self.eof_control_listener.start_consuming, 
             args=(self.process_eof_control,), 
-            daemon=True
+            daemon=False
         )
-        sum_eof_control.start()
+        self.sum_eof_control.start()
 
-        self.input_queue.start_consuming(self.process_data_messsage)
+        try:
+            self.input_queue.start_consuming(self.process_data_messsage)
+        finally:
+            self.stop_consume()
+            # Espero a que el thread termine
+            if self.sum_eof_control is not None:
+                self.sum_eof_control.join()
+
+    def stop_consume(self):
+        # Detengo la queue que recibe FRUIT_INFO y EOF_CLIENT
+        self.input_queue.stop_consuming()
+        # Detengo el exchange que recibe EOF_CONTROL
+        self.eof_control_listener.stop_consuming()
+
+    def handle_sigterm(self, signum, frame):
+        # Al recibir SIGTERM llamo a stop
+        self.stop_consume()
+
+    def close_connections(self):
+        # Cierro las conexiones de las colas y exchanges
+        self.input_queue.close()
+        self.eof_control_listener.close()
+        self.eof_control_exchange.close()
+
+        # Cierro los exchanges que envian los datos parciales a los aggregators
+        for data_output_exchange in self.data_output_exchanges:
+            data_output_exchange.close()
 
 def main():
     logging.basicConfig(level=logging.INFO)
     sum_filter = SumFilter()
-    sum_filter.start()
+
+    # Llamo el handler para el SIGTERM
+    signal.signal(signal.SIGTERM, sum_filter.handle_sigterm)
+
+    try:
+        sum_filter.start()
+    finally:
+        sum_filter.close_connections()
+
     return 0
 
 
