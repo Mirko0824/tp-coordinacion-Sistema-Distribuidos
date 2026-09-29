@@ -58,7 +58,7 @@ class JoinFilter:
         self.output_queue.send(message_protocol.internal.serialize(join_message))
         self.clients_parcial_tops.pop(client_id, None)
 
-    def process_messsage(self, message, ack, nack):
+    def process_message(self, message, ack, nack):
         logging.info("Received top")
         fields = message_protocol.internal.deserialize(message)
         message_type = fields.get("type")
@@ -71,14 +71,13 @@ class JoinFilter:
         aggregation_id = fields.get("aggregation_id")
         parcial_top = fields.get("top_fruits")
         
-        if message_type == message_protocol.internal.MessageType.PARCIAL_TOP:
-            self._process_data(client_id, aggregation_id, parcial_top)
+        self._process_data(client_id, aggregation_id, parcial_top)
 
         ack()
 
     def start(self):
         try:
-            self.input_queue.start_consuming(self.process_messsage)
+            self.input_queue.start_consuming(self.process_message)
         finally:
             self.stop_consume()
 
