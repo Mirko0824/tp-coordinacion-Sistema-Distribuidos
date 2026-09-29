@@ -16,6 +16,8 @@ class MessageType:
     EOF_CLIENT = 0x06
     # Mensajes de eof de un sum notificando a las demas instancias de sum
     EOF_CONTROL = 0x07
+    # Mensaje que informa a todos los sum que una fruta ya fue procesada
+    SUM_PROCESSED = 0x08
 
 def serialize(message):
     return json.dumps(message).encode("utf-8")

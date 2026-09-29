@@ -62,11 +62,15 @@ class JoinFilter:
         logging.info("Received top")
         fields = message_protocol.internal.deserialize(message)
         message_type = fields.get("type")
+
+        if message_type != message_protocol.internal.MessageType.PARCIAL_TOP:
+            nack()
+            return
+
         client_id = fields.get("client_id")
         aggregation_id = fields.get("aggregation_id")
         parcial_top = fields.get("top_fruits")
         
-        # Valido el type y envio el mensaje a la queue
         if message_type == message_protocol.internal.MessageType.PARCIAL_TOP:
             self._process_data(client_id, aggregation_id, parcial_top)
 

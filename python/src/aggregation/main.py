@@ -40,14 +40,12 @@ class AggregationFilter:
         # Obtengo el set de sum_ids que ya enviaron eof para el client_id
         # si no existe devuelve un set vacio
         client_eof_sums = self.clients_eof_sums.setdefault(client_id, set())
-        # Agrego el sum_id al set del cliente
         client_eof_sums.add(sum_id)
         # Devuelvo True si ya se recibieron todos los eof de los sum
         return len(client_eof_sums) == SUM_AMOUNT
     
     def _final_top(self, client_id):
         client_top = self.clients_fruits.get(client_id, {})
-        # Obtengo el top de frutas ordenado por cantidad de mayor a menor
         fruit_top_items = sorted(client_top.values())
         fruit_top_items.reverse()
         # Obtengo el top de frutas limitado a TOP_SIZE
@@ -60,7 +58,6 @@ class AggregationFilter:
         return top_fruits
 
     def _send_top_fruits(self, client_id, top_fruits):
-        # Defino el json que envia a join con el top de frutas del client_id
         top_fruits_message = {
             "type": message_protocol.internal.MessageType.PARCIAL_TOP,
             "client_id": client_id,
@@ -77,7 +74,7 @@ class AggregationFilter:
             return
         # Elimino el client_id una vez que se recibieron todos los eof
         self.clients_eof_sums.pop(client_id, None)
-        # Obtengo el top de frutas
+
         top_fruits = self._final_top(client_id)
         self._send_top_fruits(client_id, top_fruits)
         # Elimino el client_id una vez que se enviaron los top parciales
@@ -87,7 +84,14 @@ class AggregationFilter:
         logging.info("Process message")
         fields = message_protocol.internal.deserialize(message)
         message_type = fields.get("type")
-        # Valido si el mensaje es de tipo data o eof
+
+        if message_type not in (
+            message_protocol.internal.MessageType.PARCIAL_SUM,
+            message_protocol.internal.MessageType.EOF_SUM,
+        ):
+            nack()
+            return
+
         if message_type == message_protocol.internal.MessageType.PARCIAL_SUM:
             self._process_data(fields["client_id"], fields["fruit"], fields["amount"])
         elif message_type == message_protocol.internal.MessageType.EOF_SUM:
