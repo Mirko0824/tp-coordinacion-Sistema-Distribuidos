@@ -163,8 +163,19 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
         try:
             self.producer_channel.exchange_declare(exchange=self.exchange_name, exchange_type=self.exchange_type)
 
+            # Recorro las routing keys y declaro una cola por cada una, bindendolas al exchange
+            if self.routing_keys:
+                for rk in self.routing_keys:
+                    queue_name = f"{self.exchange_name}_{rk}"
+                    self.producer_channel.queue_declare(queue=queue_name, durable=True)
+                    # Si es de tipo fanout, no necesito pasarle routing key
+                    if self.exchange_type == 'fanout':
+                        self.producer_channel.queue_bind(exchange=self.exchange_name, queue=queue_name)
+                    else:
+                        self.producer_channel.queue_bind(exchange=self.exchange_name, queue=queue_name, routing_key=rk)
+
             # Si no es de tipo fanout para broadcast, necesito recorrer las routing keys y publicar el mensaje con cada una
-            if self.exchange_type != 'fanout':
+            if self.exchange_type != 'fanout' and self.routing_keys:
                 for rk in self.routing_keys:
                     self.producer_channel.basic_publish(exchange=self.exchange_name, routing_key=rk, body=message)
             else:

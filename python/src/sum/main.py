@@ -37,11 +37,11 @@ class SumFilter:
             [f"{SUM_PREFIX}_{ID}"], 
             'fanout'
         )
-        # Creo un productor que hace broadcast, no necesita routing keys
+        # Creo un productor que hace broadcast
         self.eof_control_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
             MOM_HOST, 
             SUM_CONTROL_EXCHANGE, 
-            [], 
+            [f"{SUM_PREFIX}_{i}" for i in range(SUM_AMOUNT)], 
             'fanout'
         )
         
