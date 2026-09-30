@@ -17,9 +17,7 @@ AGGREGATION_PREFIX = os.environ["AGGREGATION_PREFIX"]
 
 class SumFilter:
     def __init__(self):
-        self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
-            MOM_HOST, INPUT_QUEUE
-        )
+        self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(MOM_HOST, INPUT_QUEUE)
         self.data_output_exchanges = []
         for i in range(AGGREGATION_AMOUNT):
             data_output_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
@@ -36,28 +34,32 @@ class SumFilter:
         self.processed_message_ids = {}
         # Cada Sum escucha su routing key para recibir su copia del EOF_CONTROL
         self.eof_control_listener = middleware.MessageMiddlewareExchangeRabbitMQ(
-            MOM_HOST, SUM_CONTROL_EXCHANGE, [f"{SUM_PREFIX}_{ID}"]
+            MOM_HOST, 
+            SUM_CONTROL_EXCHANGE, 
+            [f"{SUM_PREFIX}_{ID}"], 
+            'fanout'
         )
-        # Creo un productor y paso el array de routing keys
-        self.eof_control_exchange = (
-            middleware.MessageMiddlewareExchangeRabbitMQ(
-                MOM_HOST,
-                SUM_CONTROL_EXCHANGE,
-                [f"{SUM_PREFIX}_{i}" for i in range(SUM_AMOUNT)],
-            )
+        # Creo un productor que hace broadcast, no necesita routing keys
+        self.eof_control_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
+            MOM_HOST, 
+            SUM_CONTROL_EXCHANGE, 
+            [], 
+            'fanout'
         )
         
         # Se crea un lock para proteger clients_fruit_sum, ya que 
         # el thread principal agrega y suma frutas y el thread secundario se encarga de leer y eliminar
         self.clients_sum_lock = threading.Lock()
+        # Guardo la instancia del thread
         self.sum_eof_control = None
 
     def _process_data(self, client_id, fruit, amount):
         logging.info(f"Process data")
-        self.clients_fruit_sum[client_id] = self.clients_fruit_sum.setdefault(client_id, {})
+        # Obtengo el cliente, si no existe creo uno nuevo
+        client_fruit_sum = self.clients_fruit_sum.setdefault(client_id, {})
 
         # Si la fruta ya existe, sumo la cantidad, sino se agrega
-        self.clients_fruit_sum[client_id][fruit] = self.clients_fruit_sum[client_id].get(
+        client_fruit_sum[fruit] = client_fruit_sum.get(
             fruit, fruit_item.FruitItem(fruit, 0)
         ) + fruit_item.FruitItem(fruit, int(amount))
     

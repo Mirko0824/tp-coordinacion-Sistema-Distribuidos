@@ -33,8 +33,6 @@ class AggregationFilter:
         # Si ya existe la fruta, devuelve la cantidad que ya tenia y le suma el fruitItem con la cantidad recibida
         client_fruit[fruit] = client_fruit.get(
             fruit, fruit_item.FruitItem(fruit, 0)) + fruit_item.FruitItem(fruit, int(amount))
-        # Guardo el top de frutas actualizado del client_id
-        self.clients_fruits[client_id] = client_fruit
     
     def _sum_eof(self, client_id, sum_id):
         # Obtengo el set de sum_ids que ya enviaron eof para el client_id
@@ -80,7 +78,7 @@ class AggregationFilter:
         # Elimino el client_id una vez que se enviaron los top parciales
         self.clients_fruits.pop(client_id, None)
 
-    def process_messsage(self, message, ack, nack):
+    def process_message(self, message, ack, nack):
         logging.info("Process message")
         fields = message_protocol.internal.deserialize(message)
         message_type = fields.get("type")
@@ -101,7 +99,7 @@ class AggregationFilter:
 
     def start(self):
         try:
-            self.input_exchange.start_consuming(self.process_messsage)
+            self.input_exchange.start_consuming(self.process_message)
         finally:
             self.stop_consume()
 

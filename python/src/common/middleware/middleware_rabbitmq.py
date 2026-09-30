@@ -100,7 +100,7 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
 
 class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
     
-    def __init__(self, host, exchange_name, routing_keys):
+    def __init__(self, host, exchange_name, routing_keys, exchange_type='direct'):
         self.host = host
         self.exchange_name = exchange_name
         self.routing_keys = routing_keys
@@ -109,6 +109,7 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
         self.consumer_channel = None
         self.producer_channel = None
         self.is_consuming = False
+        self.exchange_type = exchange_type
 
     def start_consuming(self, on_message_callback):
         try:
@@ -118,37 +119,34 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
             if self.consumer_channel is None or self.consumer_channel.is_closed:
                 self.consumer_channel = self.consumer_connection.channel()
         except Exception as error:
-            # Levanto excepcion de conexion
             raise MessageMiddlewareDisconnectedError(error)
         
         if self.is_consuming:
             raise MessageMiddlewareMessageError("Ya se esta consumiendo el exchange, no se puede volver a consumir")
 
         try:
-            # Defino el exchanger con el nombre y tipo 'direct' que busca coincidencia exacta
-            self.consumer_channel.exchange_declare(exchange=self.exchange_name, exchange_type='direct')
+            self.consumer_channel.exchange_declare(exchange=self.exchange_name, exchange_type=self.exchange_type)
 
             # Creo una queue name concatenando todos los routing keys con el exchange name
             queue_name = f"{self.exchange_name}_{'_'.join(self.routing_keys)}"
-            # Creo la cola donde se encolan los mensajes, en el queue name no le paso nada y lo genera automaticamente rabbitmq
             self.consumer_channel.queue_declare(queue=queue_name, durable=True)
-
-            # Recorro todos los routing_keys que son todos los tipos/claves de mensajes que quiero que se encolen
-            for rk in self.routing_keys:
-                self.consumer_channel.queue_bind(exchange=self.exchange_name, queue=queue_name, routing_key=rk)
             
-            # Defino la funcion callback clousure con las funciones ack y nack dentro
+            # Si no es de tipo fanout para broadcast, necesito recorrer las routing keys y bindear para escuchar mensajes con ese key
+            if self.exchange_type != 'fanout':
+                for rk in self.routing_keys:
+                    self.consumer_channel.queue_bind(exchange=self.exchange_name, queue=queue_name, routing_key=rk)
+            else:
+                self.consumer_channel.queue_bind(exchange=self.exchange_name, queue=queue_name)
+            
             def callback(channel, method, properties, body):
                 ack = lambda: channel.basic_ack(delivery_tag=method.delivery_tag)
                 nack = lambda: channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 on_message_callback(body, ack, nack)
 
-            # Defino de que cola quiero consumir, la funcion callback que llamo cada vez que entra un mensaje y empeizo a consumir
             self.consumer_channel.basic_consume(queue=queue_name, on_message_callback=callback, auto_ack=False)
             self.is_consuming = True
             self.consumer_channel.start_consuming()
         except Exception as error:
-            # Levanto excepcion por algun error interno
             raise MessageMiddlewareMessageError(error)
         finally:
             self.is_consuming = False
@@ -160,23 +158,19 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
             if self.producer_channel is None or self.producer_channel.is_closed:
                 self.producer_channel = self.producer_connection.channel()
         except Exception as error:
-            # Levanto excepcion de conexion
             raise MessageMiddlewareDisconnectedError(error)
         
         try:
-            self.producer_channel.exchange_declare(exchange=self.exchange_name, exchange_type='direct')
+            self.producer_channel.exchange_declare(exchange=self.exchange_name, exchange_type=self.exchange_type)
 
-            # Recorro todos los routing_keys y envio el mismo mensaje con cada clave diferente
-            for rk in self.routing_keys:
-                # Defino el queue name y conecto con el exchange con diferentes routing keys
-                queue_name = f"{self.exchange_name}_{rk}"
-                self.producer_channel.queue_declare(queue=queue_name, durable=True)
-                self.producer_channel.queue_bind(exchange=self.exchange_name, queue=queue_name, routing_key=rk)
-                # Publico el mensaje con cada routing key
-                self.producer_channel.basic_publish(exchange=self.exchange_name, routing_key=rk, body=message)
+            # Si no es de tipo fanout para broadcast, necesito recorrer las routing keys y publicar el mensaje con cada una
+            if self.exchange_type != 'fanout':
+                for rk in self.routing_keys:
+                    self.producer_channel.basic_publish(exchange=self.exchange_name, routing_key=rk, body=message)
+            else:
+                self.producer_channel.basic_publish(exchange=self.exchange_name, routing_key='', body=message)    
 
         except Exception as error:
-            # Levanto excepcion por algun error interno
             raise MessageMiddlewareMessageError(error)
 
     def close(self):
