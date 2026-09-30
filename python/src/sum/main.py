@@ -30,8 +30,6 @@ class SumFilter:
         self.clients_processed_messages = {}
         # Total de mensajes por cliente
         self.clients_total_messages = {}
-        # Guardo los message_ids ya procesados de cada cliente
-        self.processed_message_ids = {}
         # Cada Sum escucha su routing key para recibir su copia del EOF_CONTROL
         self.eof_control_listener = middleware.MessageMiddlewareExchangeRabbitMQ(
             MOM_HOST, 
@@ -141,7 +139,6 @@ class SumFilter:
         client_fruits = self.clients_fruit_sum.pop(client_id, {})
         self.clients_processed_messages.pop(client_id, None)
         self.clients_total_messages.pop(client_id, None)
-        self.processed_message_ids.pop(client_id, None)
 
         return client_fruits
 
@@ -189,13 +186,13 @@ class SumFilter:
         if message_type == message_protocol.internal.MessageType.FRUIT_INFO:
             message_id = fields["message_id"]
             client_id = fields["client_id"]
+            # Lockeo el acceso a la memoria compartida para guardar nueva fruta o cantidad
             with self.clients_sum_lock:
                 # Si el mensaje ya fue procesado, lo descarto
-                received_message_ids = self.processed_message_ids.setdefault(client_id, set())
+                received_message_ids = self.clients_processed_messages.setdefault(client_id, set())
                 if message_id in received_message_ids:
                     ack()
                     return
-                # Lockeo el acceso a la memoria compartida para guardar nueva fruta o cantidad
                 self._process_data(client_id, fields["fruit"], fields["amount"])
                 received_message_ids.add(message_id)
             # Aviso de forma broadcast despues de haber procesado el mensaje
